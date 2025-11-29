@@ -1,6 +1,5 @@
 export type LocidClientOptions = {
   endpoint?: string;
-  getAuthToken?: () => string | Promise<string>;
 };
 
 let globalOptions: LocidClientOptions = {
@@ -19,27 +18,20 @@ export async function callLocid<TArgs = unknown, TResult = unknown>(
     'Content-Type': 'application/json',
   };
 
-  if (globalOptions.getAuthToken) {
-    const token = await globalOptions.getAuthToken();
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-  }
-
   const res = await fetch(globalOptions.endpoint ?? '/locid', {
     method: 'POST',
     headers,
     body: JSON.stringify({ id: locid, args }),
   });
 
-  if (!res.ok) {
+  if (!res.ok)
     throw new Error(`Locid call failed with status ${res.status}`);
-  }
+
 
   const json = await res.json();
-  if (json.error) {
+  if (json.error)
     throw new Error(json.error.message ?? 'Locid error');
-  }
+
 
   return json.result as TResult;
 }
