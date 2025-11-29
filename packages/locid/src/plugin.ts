@@ -1,7 +1,7 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import fg from 'fast-glob';
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'vite';
 
 type LocidFileInfo = {
@@ -19,9 +19,39 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
   const dir = options.dir ?? 'locid';
   const endpoint = options.endpoint ?? '/locid';
 
-  const fileMap = new Map<string, LocidFileInfo>();
   let root = process.cwd();
   let isSSRBuild = false;
+
+  let fileMap = new Map<string, LocidFileInfo>();
+
+  async function scanServerFiles() {
+    const base = path.resolve(root, dir);
+    const pattern = path
+      .join(base, '**/*.server.{ts,tsx,js,jsx,mjs,cjs}')
+      .replace(/\\/g, '/');
+
+    const entries = await fg(pattern, { absolute: true });
+
+    const newMap = new Map<string, LocidFileInfo>();
+
+    for (const absPath of entries) {
+      const relPath = path.relative(base, absPath).replace(/\\/g, '/');
+
+      const hash = crypto
+        .createHash('sha1')
+        .update(relPath)
+        .digest('hex')
+        .slice(0, 12);
+
+      newMap.set(absPath, {
+        id: hash,
+        absPath,
+        relPath,
+      });
+    }
+
+    fileMap = newMap;
+  }
 
   return {
     name: 'locid',
@@ -33,31 +63,7 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
     },
 
     async buildStart() {
-      const base = path.resolve(root, dir);
-      const pattern = path
-        .join(base, '**/*.server.{ts,tsx,js,jsx,mjs,cjs}')
-        .replace(/\\/g, '/');
-
-      const entries = await fg(pattern, { absolute: true });
-
-      fileMap.clear();
-
-      for (const absPath of entries) {
-        const relPath = path.relative(base, absPath).replace(/\\/g, '/');
-
-        const hash = crypto
-          .createHash('sha1')
-          .update(relPath)
-          .digest('hex')
-          .slice(0, 12);
-
-        fileMap.set(absPath, {
-          id: hash,
-          absPath,
-          relPath,
-        });
-      }
-
+      await scanServerFiles();
       this.warn(`[locid] found ${fileMap.size} server files in ${dir}/`);
     },
 
@@ -82,7 +88,6 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
 
       const hashId = id.replace('virtual:locid:', '');
 
-      // Import from @locid/vite/runtime (as per exports map)
       return `
         import { callLocid } from '@locid/vite/runtime';
         export default function locidAction(args) {
@@ -92,7 +97,30 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
     },
 
     configureServer(server) {
-      // Dev-only backend inside Vite dev server
+      const watcher = server.watcher;
+      const base = path.resolve(root, dir);
+
+      watcher.add(base);
+
+      const handleChange = async () => {
+        console.log(`[locid] Change detected in ${dir}/ — rescanning...`);
+        await scanServerFiles();
+        server.moduleGraph.invalidateAll();
+        server.ws.send({ type: 'full-reload' });
+      };
+
+      watcher.on('change', (file) => {
+        if (file.startsWith(base)) void handleChange();
+      });
+
+      watcher.on('add', (file) => {
+        if (file.startsWith(base)) void handleChange();
+      });
+
+      watcher.on('unlink', (file) => {
+        if (file.startsWith(base)) void handleChange();
+      });
+
       server.middlewares.use(endpoint, async (req, res) => {
         if (req.method !== 'POST') {
           res.statusCode = 405;
@@ -116,8 +144,11 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
             return;
           }
 
-          const mod = await import(entry.absPath);
+          // Bust Node's ESM cache by using a query param on the file URL
+          const fileUrl = pathToFileURL(entry.absPath).href + `?t=${Date.now()}`;
+          const mod = await import(fileUrl);
           const handler = mod.default;
+
           if (typeof handler !== 'function') {
             res.statusCode = 500;
             res.setHeader('Content-Type', 'application/json');
