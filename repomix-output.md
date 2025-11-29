@@ -42,6 +42,8 @@ packages/
       index.ts
       plugin.ts
       runtime.ts
+      scan-server-files.ts
+      types.ts
     package.json
     README.md
     tsconfig.json
@@ -64,6 +66,57 @@ vite.config.ts
 
 # Files
 
+## File: packages/locid/src/scan-server-files.ts
+````typescript
+import path from "node:path";
+import crypto from 'node:crypto';
+import { LocidFileInfo } from "./types";
+import FastGlob from "fast-glob";
+
+export const scanServerFiles = async (root: string, dir: string) => {
+  const base = path.resolve(root, dir);
+  const pattern = path
+    .join(base, '**/*.server.{ts,tsx,js,jsx,mjs,cjs}')
+    .replace(/\\/g, '/');
+
+  const entries = await FastGlob(pattern, { absolute: true });
+
+  const newMap = new Map<string, LocidFileInfo>();
+
+  for (const absPath of entries) {
+    const relPath = path.relative(base, absPath).replace(/\\/g, '/');
+
+    const hash = crypto
+      .createHash('sha1')
+      .update(relPath)
+      .digest('hex')
+      .slice(0, 12);
+
+    newMap.set(absPath, {
+      id: hash,
+      absPath,
+      relPath,
+    });
+  }
+
+  return newMap;
+}
+````
+
+## File: packages/locid/src/types.ts
+````typescript
+export type LocidFileInfo = {
+  id: string
+  absPath: string
+  relPath: string
+}
+
+export type LocidPluginOptions = {
+  dir?: string // e.g. "locid"
+  endpoint?: string // e.g. "/locid"
+}
+````
+
 ## File: locid/hello.server.ts
 ````typescript
 export default async function helloServer(args: { name: string }) {
@@ -78,240 +131,6 @@ export default async function helloServer(args: { name: string }) {
 ````typescript
 export { locidPlugin } from './plugin.js';
 export { callLocid, configureLocidClient } from './runtime.js';
-````
-
-## File: packages/locid/src/plugin.ts
-````typescript
-import path from 'node:path';
-import fg from 'fast-glob';
-import crypto from 'node:crypto';
-import { pathToFileURL } from 'node:url';
-import type { Plugin } from 'vite';
-
-type LocidFileInfo = {
-  id: string;
-  absPath: string;
-  relPath: string;
-};
-
-type LocidPluginOptions = {
-  dir?: string;      // e.g. "locid"
-  endpoint?: string; // e.g. "/locid"
-};
-
-export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
-  const dir = options.dir ?? 'locid';
-  const endpoint = options.endpoint ?? '/locid';
-
-  let root = process.cwd();
-  let isSSRBuild = false;
-
-  let fileMap = new Map<string, LocidFileInfo>();
-
-  async function scanServerFiles() {
-    const base = path.resolve(root, dir);
-    const pattern = path
-      .join(base, '**/*.server.{ts,tsx,js,jsx,mjs,cjs}')
-      .replace(/\\/g, '/');
-
-    const entries = await fg(pattern, { absolute: true });
-
-    const newMap = new Map<string, LocidFileInfo>();
-
-    for (const absPath of entries) {
-      const relPath = path.relative(base, absPath).replace(/\\/g, '/');
-
-      const hash = crypto
-        .createHash('sha1')
-        .update(relPath)
-        .digest('hex')
-        .slice(0, 12);
-
-      newMap.set(absPath, {
-        id: hash,
-        absPath,
-        relPath,
-      });
-    }
-
-    fileMap = newMap;
-  }
-
-  return {
-    name: 'locid',
-    enforce: 'pre',
-
-    configResolved(config) {
-      root = config.root;
-      isSSRBuild = !!config.build?.ssr;
-    },
-
-    async buildStart() {
-      await scanServerFiles();
-      this.warn(`[locid] found ${fileMap.size} server files in ${dir}/`);
-    },
-
-    async resolveId(source, importer, opts) {
-      if (isSSRBuild || opts?.ssr) return null;
-      if (!importer) return null;
-
-      if (!source.includes('.server')) return null;
-
-      const resolved = await this.resolve(source, importer, { skipSelf: true });
-      if (!resolved) return null;
-
-      const info = fileMap.get(resolved.id);
-      if (!info) return null;
-
-      const virtualId = `virtual:locid:${info.id}`;
-      return virtualId;
-    },
-
-    load(id) {
-      if (!id.startsWith('virtual:locid:')) return null;
-
-      const hashId = id.replace('virtual:locid:', '');
-
-      return `
-        import { callLocid } from '@locid/vite/runtime';
-        export default function locidAction(args) {
-          return callLocid('${hashId}', args);
-        }
-      `;
-    },
-
-    configureServer(server) {
-      const watcher = server.watcher;
-      const base = path.resolve(root, dir);
-
-      watcher.add(base);
-
-      const handleChange = async () => {
-        console.log(`[locid] Change detected in ${dir}/ — rescanning...`);
-        await scanServerFiles();
-        server.moduleGraph.invalidateAll();
-        server.ws.send({ type: 'full-reload' });
-      };
-
-      watcher.on('change', (file) => {
-        if (file.startsWith(base)) void handleChange();
-      });
-
-      watcher.on('add', (file) => {
-        if (file.startsWith(base)) void handleChange();
-      });
-
-      watcher.on('unlink', (file) => {
-        if (file.startsWith(base)) void handleChange();
-      });
-
-      server.middlewares.use(endpoint, async (req, res) => {
-        if (req.method !== 'POST') {
-          res.statusCode = 405;
-          res.end('Method Not Allowed');
-          return;
-        }
-
-        try {
-          const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk as Buffer);
-          }
-          const bodyStr = Buffer.concat(chunks).toString('utf8');
-          const { id, args } = JSON.parse(bodyStr);
-
-          const entry = [...fileMap.values()].find((f) => f.id === id);
-          if (!entry) {
-            res.statusCode = 404;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ error: { message: 'Unknown locid id' } }));
-            return;
-          }
-
-          // Bust Node's ESM cache by using a query param on the file URL
-          const fileUrl = pathToFileURL(entry.absPath).href + `?t=${Date.now()}`;
-          const mod = await import(fileUrl);
-          const handler = mod.default;
-
-          if (typeof handler !== 'function') {
-            res.statusCode = 500;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(
-              JSON.stringify({
-                error: { message: 'Locid file has no default export function' },
-              }),
-            );
-            return;
-          }
-
-          const result = await handler(args);
-
-          res.statusCode = 200;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ result }));
-        } catch (err: any) {
-          console.error('[locid] error handling request', err);
-          res.statusCode = 500;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(
-            JSON.stringify({
-              error: { message: err?.message ?? 'Internal error' },
-            }),
-          );
-        }
-      });
-    },
-  };
-}
-````
-
-## File: packages/locid/src/runtime.ts
-````typescript
-export type LocidClientOptions = {
-  endpoint?: string;
-  getAuthToken?: () => string | Promise<string>;
-};
-
-let globalOptions: LocidClientOptions = {
-  endpoint: '/locid',
-};
-
-export function configureLocidClient(opts: LocidClientOptions) {
-  globalOptions = { ...globalOptions, ...opts };
-}
-
-export async function callLocid<TArgs = unknown, TResult = unknown>(
-  locid: string,
-  args: TArgs,
-): Promise<TResult> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  if (globalOptions.getAuthToken) {
-    const token = await globalOptions.getAuthToken();
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-  }
-
-  const res = await fetch(globalOptions.endpoint ?? '/locid', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ id: locid, args }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Locid call failed with status ${res.status}`);
-  }
-
-  const json = await res.json();
-  if (json.error) {
-    throw new Error(json.error.message ?? 'Locid error');
-  }
-
-  return json.result as TResult;
-}
 ````
 
 ## File: packages/locid/package.json
@@ -797,6 +616,192 @@ export default defineConfig({
     }),
   ],
 })
+````
+
+## File: packages/locid/src/plugin.ts
+````typescript
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { Plugin } from 'vite';
+import { scanServerFiles } from './scan-server-files';
+import { LocidFileInfo, LocidPluginOptions } from './types';
+
+export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
+  const dir = options.dir ?? 'locid';
+  const endpoint = options.endpoint ?? '/locid';
+
+  let root = process.cwd();
+  let isSSRBuild = false;
+
+  let fileMap = new Map<string, LocidFileInfo>();
+
+  return {
+    name: 'locid',
+    enforce: 'pre',
+
+    configResolved(config) {
+      root = config.root;
+      isSSRBuild = !!config.build?.ssr;
+    },
+
+    async buildStart() {
+      fileMap = await scanServerFiles(root, dir);
+      this.warn(`[locid] found ${fileMap.size} server files in ${dir}/`);
+    },
+
+    async resolveId(source, importer, opts) {
+      if (isSSRBuild || opts?.ssr) return null;
+      if (!importer) return null;
+
+      if (!source.includes('.server')) return null;
+
+      const resolved = await this.resolve(source, importer, { skipSelf: true });
+      if (!resolved) return null;
+
+      const info = fileMap.get(resolved.id);
+      if (!info) return null;
+
+      const virtualId = `virtual:locid:${info.id}`;
+      return virtualId;
+    },
+
+    load(id) {
+      if (!id.startsWith('virtual:locid:')) return null;
+
+      const hashId = id.replace('virtual:locid:', '');
+
+      return `
+        import { callLocid } from '@locid/vite/runtime';
+        export default function locidAction(args) {
+          return callLocid('${hashId}', args);
+        }
+      `;
+    },
+
+    configureServer(server) {
+      const watcher = server.watcher;
+      const base = path.resolve(root, dir);
+
+      watcher.add(base);
+
+      const handleChange = async () => {
+        console.log(`[locid] Change detected in ${dir}/ — rescanning...`);
+        fileMap = await scanServerFiles(root, dir);
+        server.moduleGraph.invalidateAll();
+        server.ws.send({ type: 'full-reload' });
+      };
+
+      watcher.on('change', (file) => {
+        if (file.startsWith(base)) void handleChange();
+      });
+
+      watcher.on('add', (file) => {
+        if (file.startsWith(base)) void handleChange();
+      });
+
+      watcher.on('unlink', (file) => {
+        if (file.startsWith(base)) void handleChange();
+      });
+
+      server.middlewares.use(endpoint, async (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405;
+          res.end('Method Not Allowed');
+          return;
+        }
+
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) {
+            chunks.push(chunk as Buffer);
+          }
+          const bodyStr = Buffer.concat(chunks).toString('utf8');
+          const { id, args } = JSON.parse(bodyStr);
+
+          const entry = [...fileMap.values()].find((f) => f.id === id);
+          if (!entry) {
+            res.statusCode = 404;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: { message: 'Unknown locid id' } }));
+            return;
+          }
+
+          // Bust Node's ESM cache by using a query param on the file URL
+          const fileUrl = pathToFileURL(entry.absPath).href + `?t=${Date.now()}`;
+          const mod = await import(fileUrl);
+          const handler = mod.default;
+
+          if (typeof handler !== 'function') {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({
+                error: { message: 'Locid file has no default export function' },
+              }),
+            );
+            return;
+          }
+
+          const result = await handler(args);
+
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ result }));
+        } catch (err: any) {
+          console.error('[locid] error handling request', err);
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: { message: err?.message ?? 'Internal error' },
+            }),
+          );
+        }
+      });
+    },
+  };
+}
+````
+
+## File: packages/locid/src/runtime.ts
+````typescript
+export type LocidClientOptions = {
+  endpoint?: string;
+};
+
+let globalOptions: LocidClientOptions = {
+  endpoint: '/locid',
+};
+
+export function configureLocidClient(opts: LocidClientOptions) {
+  globalOptions = { ...globalOptions, ...opts };
+}
+
+export async function callLocid<TArgs = unknown, TResult = unknown>(
+  locid: string,
+  args: TArgs,
+): Promise<TResult> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  const res = await fetch(globalOptions.endpoint ?? '/locid', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ id: locid, args }),
+  });
+
+  if (!res.ok)
+    throw new Error(`Locid call failed with status ${res.status}`);
+
+
+  const json = await res.json();
+  if (json.error)
+    throw new Error(json.error.message ?? 'Locid error');
+
+
+  return json.result as TResult;
+}
 ````
 
 ## File: README.md

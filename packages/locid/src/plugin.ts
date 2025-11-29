@@ -1,19 +1,8 @@
 import path from 'node:path';
-import fg from 'fast-glob';
-import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'vite';
-
-type LocidFileInfo = {
-  id: string;
-  absPath: string;
-  relPath: string;
-};
-
-type LocidPluginOptions = {
-  dir?: string;      // e.g. "locid"
-  endpoint?: string; // e.g. "/locid"
-};
+import { scanServerFiles } from './scan-server-files';
+import { LocidFileInfo, LocidPluginOptions } from './types';
 
 export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
   const dir = options.dir ?? 'locid';
@@ -23,35 +12,6 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
   let isSSRBuild = false;
 
   let fileMap = new Map<string, LocidFileInfo>();
-
-  async function scanServerFiles() {
-    const base = path.resolve(root, dir);
-    const pattern = path
-      .join(base, '**/*.server.{ts,tsx,js,jsx,mjs,cjs}')
-      .replace(/\\/g, '/');
-
-    const entries = await fg(pattern, { absolute: true });
-
-    const newMap = new Map<string, LocidFileInfo>();
-
-    for (const absPath of entries) {
-      const relPath = path.relative(base, absPath).replace(/\\/g, '/');
-
-      const hash = crypto
-        .createHash('sha1')
-        .update(relPath)
-        .digest('hex')
-        .slice(0, 12);
-
-      newMap.set(absPath, {
-        id: hash,
-        absPath,
-        relPath,
-      });
-    }
-
-    fileMap = newMap;
-  }
 
   return {
     name: 'locid',
@@ -63,7 +23,7 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
     },
 
     async buildStart() {
-      await scanServerFiles();
+      fileMap = await scanServerFiles(root, dir);
       this.warn(`[locid] found ${fileMap.size} server files in ${dir}/`);
     },
 
@@ -104,7 +64,7 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
 
       const handleChange = async () => {
         console.log(`[locid] Change detected in ${dir}/ — rescanning...`);
-        await scanServerFiles();
+        fileMap = await scanServerFiles(root, dir);
         server.moduleGraph.invalidateAll();
         server.ws.send({ type: 'full-reload' });
       };
