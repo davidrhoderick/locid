@@ -35,10 +35,31 @@ The content is organized as follows:
 # Directory Structure
 ```
 locid/
+  middleware/
+    auth.ts
+    pipelines.ts
+    traceId.ts
+  context.ts
+  get-profile.server.ts
   hello.server.ts
+  ping.server.ts
 packages/
   locid/
     src/
+      actions/
+        define-action.ts
+        index.ts
+        types.ts
+      client/
+        types.ts
+      middleware/
+        create-pipeline.ts
+        index.ts
+        types.ts
+      server/
+        handle-request.ts
+        index.ts
+        types.ts
       index.ts
       plugin.ts
       runtime.ts
@@ -65,6 +86,287 @@ vite.config.ts
 ```
 
 # Files
+
+## File: locid/middleware/auth.ts
+````typescript
+import type { Middleware } from '@locid/vite'
+import type { PublicCtx, AuthedCtx } from '../context'
+import { IncomingMessage, ServerResponse } from 'node:http'
+
+export const withOptionalUser: Middleware<
+  PublicCtx,
+  PublicCtx & { userId?: string },
+  IncomingMessage,
+  ServerResponse
+> = (ctx, req) => {
+  const token = req.headers.authorization ?? ''
+  const userId = token ? '1' : undefined
+  return { ...ctx, userId }
+}
+
+export const requireUser: Middleware<
+  PublicCtx & { userId?: string },
+  AuthedCtx,
+  IncomingMessage,
+  ServerResponse
+> = (ctx) => {
+  if (!ctx.userId) {
+    throw new Error('Unauthorized')
+  }
+  // we assert it as non-optional now:
+  return { ...ctx, userId: ctx.userId }
+}
+````
+
+## File: locid/middleware/pipelines.ts
+````typescript
+import type { PublicCtx, AuthedCtx } from '../context'
+import { withOptionalUser, requireUser } from './auth'
+import { createPipeline } from '@locid/vite'
+import { withTraceId } from './traceId'
+import { IncomingMessage, ServerResponse } from 'node:http'
+
+// context in: PublicCtx, context out: AuthedCtx
+export const authedPipeline = createPipeline<
+  PublicCtx,
+  AuthedCtx,
+  IncomingMessage,
+  ServerResponse
+>(withTraceId, withOptionalUser, requireUser)
+
+// pure public: same ctx in/out
+export const publicPipeline = createPipeline<
+  PublicCtx,
+  PublicCtx,
+  IncomingMessage,
+  ServerResponse
+>(withTraceId)
+````
+
+## File: locid/middleware/traceId.ts
+````typescript
+import { Middleware } from '@locid/vite'
+import { IncomingMessage, ServerResponse } from 'node:http'
+import { PublicCtx } from '../context'
+
+export const withTraceId: Middleware<
+  PublicCtx,
+  PublicCtx,
+  IncomingMessage,
+  ServerResponse
+> = (ctx, req, _res) => {
+  return {
+    ...ctx,
+    traceId: (req.headers['x-trace-id'] as string) ?? crypto.randomUUID(),
+  }
+}
+````
+
+## File: locid/context.ts
+````typescript
+export type PublicCtx = {
+  traceId: string
+}
+
+export type AuthedCtx = PublicCtx & {
+  userId: string
+}
+````
+
+## File: locid/get-profile.server.ts
+````typescript
+import { defineAction } from '@locid/vite'
+import { type AuthedCtx } from './context'
+import { authedPipeline } from './middleware/pipelines'
+
+const getProfile = defineAction({
+  middleware: authedPipeline,
+  async handler(ctx: AuthedCtx, _args: {}) {
+    return ctx.userId
+  },
+})
+
+export default getProfile
+````
+
+## File: locid/ping.server.ts
+````typescript
+import { defineAction } from '@locid/vite'
+import { publicPipeline } from './middleware/pipelines'
+import { PublicCtx } from './context'
+
+const ping = defineAction({
+  middleware: publicPipeline,
+  async handler(ctx: PublicCtx, _args: {}) {
+    return { ok: true, traceId: ctx.traceId }
+  },
+})
+
+export default ping
+````
+
+## File: packages/locid/src/actions/define-action.ts
+````typescript
+import { ActionDef } from './types'
+
+export const defineAction = <
+  Args,
+  Result,
+  CtxIn = unknown,
+  CtxOut = CtxIn,
+  Req = unknown,
+  Res = unknown,
+>(
+  def: ActionDef<Args, Result, CtxIn, CtxOut, Req, Res>,
+): ActionDef<Args, Result, CtxIn, CtxOut, Req, Res> => def
+````
+
+## File: packages/locid/src/actions/index.ts
+````typescript
+export * from './define-action'
+export * from './types'
+````
+
+## File: packages/locid/src/actions/types.ts
+````typescript
+import { MiddlewarePipeline } from '../middleware'
+
+export interface ActionDef<
+  Args,
+  Result,
+  CtxIn,
+  CtxOut,
+  Req = unknown,
+  Res = unknown,
+> {
+  middleware?: MiddlewarePipeline<CtxIn, CtxOut, Req, Res>
+  handler: (ctx: CtxOut, args: Args) => Promise<Result> | Result
+}
+````
+
+## File: packages/locid/src/client/types.ts
+````typescript
+import { ActionDef } from '../actions'
+
+export type Clientify<T> =
+  T extends ActionDef<infer Args, infer Result, any, any, any, any>
+    ? (args: Args) => Promise<Result>
+    : never
+````
+
+## File: packages/locid/src/middleware/create-pipeline.ts
+````typescript
+import { Middleware, MiddlewarePipeline } from './types'
+
+export const createPipeline = <CtxIn, CtxOut, Req, Res>(
+  ...middlewares: Middleware<any, any, Req, Res>[]
+): MiddlewarePipeline<CtxIn, CtxOut, Req, Res> => ({
+  async run(initialCtx: CtxIn, req: Req, res: Res): Promise<CtxOut> {
+    let ctx: unknown = initialCtx
+
+    for (const mw of middlewares) {
+      const result = await mw(ctx as any, req, res)
+      if (result !== undefined) {
+        ctx = result
+      }
+    }
+
+    return ctx as CtxOut
+  },
+})
+````
+
+## File: packages/locid/src/middleware/index.ts
+````typescript
+export * from './types'
+export * from './create-pipeline'
+````
+
+## File: packages/locid/src/middleware/types.ts
+````typescript
+export type Middleware<CtxIn, CtxOut, Req = unknown, Res = unknown> = (
+  ctx: CtxIn,
+  req: Req,
+  res: Res,
+) => Promise<CtxOut | void> | CtxOut | void
+
+export interface MiddlewarePipeline<
+  CtxIn,
+  CtxOut,
+  Req = unknown,
+  Res = unknown,
+> {
+  run: (initialCtx: CtxIn, req: Req, res: Res) => Promise<CtxOut>
+}
+````
+
+## File: packages/locid/src/server/handle-request.ts
+````typescript
+import { LocidRegistryEntry } from './types'
+
+const registry = new Map<string, LocidRegistryEntry>()
+
+export function registerAction(entry: LocidRegistryEntry) {
+  registry.set(entry.id, entry)
+}
+
+export async function handleRequest<Req, Res>(
+  req: Req,
+  res: Res,
+  parseRpc: (req: Req) => Promise<{ actionId: string; args: unknown }>,
+  buildInitialCtx: (req: Req, res: Res) => Promise<unknown> | unknown,
+): Promise<unknown> {
+  const { actionId, args } = await parseRpc(req)
+  const entry = registry.get(actionId)
+
+  if (!entry) throw new Error(`Unknown action: ${actionId}`)
+
+  const { def } = entry as LocidRegistryEntry
+  const initialCtx = await buildInitialCtx(req, res)
+
+  let finalCtx: unknown = initialCtx
+  if (def.middleware) {
+    finalCtx = await def.middleware.run(initialCtx, req, res)
+  }
+
+  return def.handler(finalCtx as any, args as any)
+}
+````
+
+## File: packages/locid/src/server/types.ts
+````typescript
+import { ActionDef } from "../actions"
+
+export interface LocidRegistryEntry<
+  Args = any,
+  Result = any,
+  CtxIn = any,
+  CtxOut = any,
+  Req = any,
+  Res = any
+> {
+  id: string
+  def: ActionDef<Args, Result, CtxIn, CtxOut, Req, Res>
+}
+````
+
+## File: locid/hello.server.ts
+````typescript
+export default async function helloServer(args: { name: string }) {
+  return {
+    message: `Hello from Locid, ${args.name}!`,
+    timestamp: new Date().toISOString(),
+  }
+}
+````
+
+## File: packages/locid/src/index.ts
+````typescript
+export { locidPlugin } from './plugin.js'
+export { callLocid, configureLocidClient } from './runtime.js'
+export { createPipeline, type Middleware } from './middleware/index.js'
+export { defineAction } from './actions/index.js'
+````
 
 ## File: packages/locid/src/scan-server-files.ts
 ````typescript
@@ -115,22 +417,6 @@ export type LocidPluginOptions = {
   dir?: string // e.g. "locid"
   endpoint?: string // e.g. "/locid"
 }
-````
-
-## File: locid/hello.server.ts
-````typescript
-export default async function helloServer(args: { name: string }) {
-  return {
-    message: `Hello from Locid, ${args.name}!`,
-    timestamp: new Date().toISOString(),
-  }
-}
-````
-
-## File: packages/locid/src/index.ts
-````typescript
-export { locidPlugin } from './plugin.js';
-export { callLocid, configureLocidClient } from './runtime.js';
 ````
 
 ## File: packages/locid/package.json
@@ -618,12 +904,101 @@ export default defineConfig({
 })
 ````
 
+## File: packages/locid/src/runtime.ts
+````typescript
+export type LocidClientOptions = {
+  endpoint?: string;
+};
+
+let globalOptions: LocidClientOptions = {
+  endpoint: '/locid',
+};
+
+export function configureLocidClient(opts: LocidClientOptions) {
+  globalOptions = { ...globalOptions, ...opts };
+}
+
+export async function callLocid<TArgs = unknown, TResult = unknown>(
+  locid: string,
+  args: TArgs,
+): Promise<TResult> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  const res = await fetch(globalOptions.endpoint ?? '/locid', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ id: locid, args }),
+  });
+
+  if (!res.ok)
+    throw new Error(`Locid call failed with status ${res.status}`);
+
+
+  const json = await res.json();
+  if (json.error)
+    throw new Error(json.error.message ?? 'Locid error');
+
+
+  return json.result as TResult;
+}
+````
+
+## File: README.md
+````markdown
+# Locid Vite PoC
+
+This repository demonstrates a working proof-of-concept for Locid — a runtime-agnostic, file-based server actions system — using a real Vite + React application.
+
+## Project Layout
+
+```
+locid/              ← server action files
+packages/
+  locid/            ← @locid/vite plugin package
+src/                ← frontend app
+vite.config.ts      ← plugin usage
+```
+
+## How the PoC Works
+
+1. Server action lives in `locid/hello.server.ts`.
+2. Client imports it normally in `src/App.tsx`.
+3. Plugin rewrites import to RPC stub.
+4. Calling the function sends POST `/locid`.
+5. Dev server dynamically executes the real server file.
+
+## Running the PoC
+
+```bash
+npm install
+npm run build:locid
+npm run dev
+```
+
+Open http://localhost:5173 and trigger the action.
+
+## Why This Matters
+
+This proves Locid's core abstraction works:
+
+> “Import server functions in the client. Let the build system turn them into RPC calls automatically.”
+
+## Next Steps
+
+- Streaming support
+- Middleware
+- Production adapters
+- Type generation
+````
+
 ## File: packages/locid/src/plugin.ts
 ````typescript
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'vite';
-import { scanServerFiles } from './scan-server-files';
+import { scanServerFiles } from './scan-server-files.js';
 import { LocidFileInfo, LocidPluginOptions } from './types';
 
 export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
@@ -761,93 +1136,4 @@ export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
     },
   };
 }
-````
-
-## File: packages/locid/src/runtime.ts
-````typescript
-export type LocidClientOptions = {
-  endpoint?: string;
-};
-
-let globalOptions: LocidClientOptions = {
-  endpoint: '/locid',
-};
-
-export function configureLocidClient(opts: LocidClientOptions) {
-  globalOptions = { ...globalOptions, ...opts };
-}
-
-export async function callLocid<TArgs = unknown, TResult = unknown>(
-  locid: string,
-  args: TArgs,
-): Promise<TResult> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  const res = await fetch(globalOptions.endpoint ?? '/locid', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ id: locid, args }),
-  });
-
-  if (!res.ok)
-    throw new Error(`Locid call failed with status ${res.status}`);
-
-
-  const json = await res.json();
-  if (json.error)
-    throw new Error(json.error.message ?? 'Locid error');
-
-
-  return json.result as TResult;
-}
-````
-
-## File: README.md
-````markdown
-# Locid Vite PoC
-
-This repository demonstrates a working proof-of-concept for Locid — a runtime-agnostic, file-based server actions system — using a real Vite + React application.
-
-## Project Layout
-
-```
-locid/              ← server action files
-packages/
-  locid/            ← @locid/vite plugin package
-src/                ← frontend app
-vite.config.ts      ← plugin usage
-```
-
-## How the PoC Works
-
-1. Server action lives in `locid/hello.server.ts`.
-2. Client imports it normally in `src/App.tsx`.
-3. Plugin rewrites import to RPC stub.
-4. Calling the function sends POST `/locid`.
-5. Dev server dynamically executes the real server file.
-
-## Running the PoC
-
-```bash
-npm install
-npm run build:locid
-npm run dev
-```
-
-Open http://localhost:5173 and trigger the action.
-
-## Why This Matters
-
-This proves Locid's core abstraction works:
-
-> “Import server functions in the client. Let the build system turn them into RPC calls automatically.”
-
-## Next Steps
-
-- Streaming support
-- Middleware
-- Production adapters
-- Type generation
 ````
