@@ -1,4 +1,4 @@
-import { defineAction } from '@locid/vite'
+import { defineAction } from '@locid/core'
 import { publicPipeline } from './middleware/pipelines'
 import { PublicCtx } from './context'
 

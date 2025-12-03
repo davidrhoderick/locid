@@ -44,7 +44,7 @@ locid/
   hello.server.ts
   ping.server.ts
 packages/
-  locid/
+  locid-core/
     src/
       actions/
         define-action.ts
@@ -61,6 +61,19 @@ packages/
         index.ts
         types.ts
       index.ts
+    package.json
+    README.md
+    tsconfig.json
+  locid-node/
+    src/
+      index.ts
+      node-http-handler.ts
+    package.json
+    README.md
+    tsconfig.json
+  locid-vite/
+    src/
+      index.ts
       plugin.ts
       runtime.ts
       scan-server-files.ts
@@ -68,6 +81,7 @@ packages/
     package.json
     README.md
     tsconfig.json
+    tsup.config.ts
 public/
   vite.svg
 src/
@@ -87,9 +101,1106 @@ vite.config.ts
 
 # Files
 
+## File: packages/locid-core/src/actions/define-action.ts
+````typescript
+import { ActionDef } from './types'
+
+export const defineAction = <
+  Args,
+  Result,
+  CtxIn = unknown,
+  CtxOut = CtxIn,
+  Req = unknown,
+  Res = unknown,
+>(
+  def: ActionDef<Args, Result, CtxIn, CtxOut, Req, Res>,
+): ActionDef<Args, Result, CtxIn, CtxOut, Req, Res> => def
+````
+
+## File: packages/locid-core/src/actions/index.ts
+````typescript
+export * from './define-action'
+export * from './types'
+````
+
+## File: packages/locid-core/src/actions/types.ts
+````typescript
+import { MiddlewarePipeline } from '../middleware'
+
+export interface ActionDef<
+  Args,
+  Result,
+  CtxIn,
+  CtxOut,
+  Req = unknown,
+  Res = unknown,
+> {
+  middleware?: MiddlewarePipeline<CtxIn, CtxOut, Req, Res>
+  handler: (ctx: CtxOut, args: Args) => Promise<Result> | Result
+}
+````
+
+## File: packages/locid-core/src/client/types.ts
+````typescript
+import { ActionDef } from '../actions'
+
+export type Clientify<T> =
+  T extends ActionDef<infer Args, infer Result, any, any, any, any>
+    ? (args: Args) => Promise<Result>
+    : never
+````
+
+## File: packages/locid-core/src/middleware/create-pipeline.ts
+````typescript
+import { Middleware, MiddlewarePipeline } from './types'
+
+export const createPipeline = <CtxIn, CtxOut, Req, Res>(
+  ...middlewares: Middleware<any, any, Req, Res>[]
+): MiddlewarePipeline<CtxIn, CtxOut, Req, Res> => ({
+  async run(initialCtx: CtxIn, req: Req, res: Res): Promise<CtxOut> {
+    let ctx: unknown = initialCtx
+
+    for (const mw of middlewares) {
+      const result = await mw(ctx as any, req, res)
+      if (result !== undefined) {
+        ctx = result
+      }
+    }
+
+    return ctx as CtxOut
+  },
+})
+````
+
+## File: packages/locid-core/src/middleware/index.ts
+````typescript
+export * from './types'
+export * from './create-pipeline'
+````
+
+## File: packages/locid-core/src/middleware/types.ts
+````typescript
+export type Middleware<CtxIn, CtxOut, Req = unknown, Res = unknown> = (
+  ctx: CtxIn,
+  req: Req,
+  res: Res,
+) => Promise<CtxOut | void> | CtxOut | void
+
+export interface MiddlewarePipeline<
+  CtxIn,
+  CtxOut,
+  Req = unknown,
+  Res = unknown,
+> {
+  run: (initialCtx: CtxIn, req: Req, res: Res) => Promise<CtxOut>
+}
+````
+
+## File: packages/locid-core/src/server/handle-request.ts
+````typescript
+import { LocidRegistryEntry } from './types'
+
+const registry = new Map<string, LocidRegistryEntry>()
+
+export function registerAction(entry: LocidRegistryEntry) {
+  registry.set(entry.id, entry)
+}
+
+export async function handleRequest<Req, Res>(
+  req: Req,
+  res: Res,
+  parseRpc: (req: Req) => Promise<{ actionId: string; args: unknown }>,
+  buildInitialCtx: (req: Req, res: Res) => Promise<unknown> | unknown,
+): Promise<unknown> {
+  const { actionId, args } = await parseRpc(req)
+  const entry = registry.get(actionId)
+
+  if (!entry) throw new Error(`Unknown action: ${actionId}`)
+
+  const { def } = entry as LocidRegistryEntry
+  const initialCtx = await buildInitialCtx(req, res)
+
+  let finalCtx: unknown = initialCtx
+  if (def.middleware) {
+    finalCtx = await def.middleware.run(initialCtx, req, res)
+  }
+
+  return def.handler(finalCtx as any, args as any)
+}
+````
+
+## File: packages/locid-core/src/server/index.ts
+````typescript
+export * from './handle-request'
+````
+
+## File: packages/locid-core/src/server/types.ts
+````typescript
+import { ActionDef } from '../actions'
+
+export interface LocidRegistryEntry<
+  Args = any,
+  Result = any,
+  CtxIn = any,
+  CtxOut = any,
+  Req = any,
+  Res = any,
+> {
+  id: string
+  def: ActionDef<Args, Result, CtxIn, CtxOut, Req, Res>
+}
+````
+
+## File: packages/locid-core/src/index.ts
+````typescript
+export { defineAction } from './actions'
+export type { ActionDef } from './actions'
+
+export { createPipeline } from './middleware'
+export type { Middleware, MiddlewarePipeline } from './middleware'
+
+export type { Clientify } from './client/types'
+
+export * from './server'
+````
+
+## File: packages/locid-core/package.json
+````json
+{
+  "name": "@locid/core",
+  "version": "0.0.1",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/server/index.js",
+      "types": "./dist/server/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.0.0"
+  }
+}
+````
+
+## File: packages/locid-core/README.md
+````markdown
+# @locid/vite
+
+Locid is a framework-agnostic “server actions” system inspired by Next.js server actions, but portable across **any** JavaScript runtime (Vite, Bun, Deno, Node, Workers).  
+This package (`@locid/vite`) provides the Vite integration layer that makes Locid work during development and client-side bundling.
+
+Locid turns files in a **server directory** into RPC-style functions that you can import and call from your frontend code as if they were local. At build time, the plugin rewrites those imports to lightweight stubs that call your server action over HTTP (with optional streaming in the future).
+
+---
+
+## How Locid Works (Conceptual)
+
+1. You place server-side functions inside a directory such as `locid/`, and name them with the `.server.ts` suffix:
+
+   ```ts
+   // locid/hello.server.ts
+   export default async function helloServer(args: { name: string }) {
+     return {
+       message: `Hello from Locid, ${args.name}!`,
+       timestamp: new Date().toISOString(),
+     }
+   }
+   ```
+
+2. The Vite plugin scans that folder during build and assigns each file a stable hashed ID based on its relative path.
+   (Example: "hello.server.ts" → "9a3f12d01a44").
+
+3. When the client imports a .server.ts file:
+
+- In SSR or server builds, the import resolves normally.
+- In client builds, the plugin rewrites the import into a virtual module:
+
+  ```ts
+  import { callLocid } from '@locid/vite/runtime'
+  export default function locidAction(args) {
+    return callLocid('HASH_ID', args)
+  }
+  ```
+
+4. When that function is called in the browser, callLocid sends a POST request to the Locid endpoint (/locid by default).
+
+5. During development, the plugin registers a dev-server route that dynamically imports your server function file and executes it.
+
+6. You get a zero-API, file-based RPC system—server actions without a framework.
+
+---
+
+## Installation
+
+In a Vite project using npm workspaces:
+
+```bash
+npm install @locid/vite --save-dev
+```
+
+---
+
+## Usage
+
+1. Create a directory for server actions
+
+   Create `locid/hello.server.ts`:
+
+   ```ts
+   export default async function helloServer({ name }: { name: string }) {
+     return { message: `Hello from ${name}` }
+   }
+   ```
+
+2. Add the plugin to `vite.config.ts`:
+
+   ```ts
+   import { defineConfig } from 'vite'
+   import { locidPlugin } from '@locid/vite'
+
+   export default defineConfig({
+     plugins: [
+       locidPlugin(),
+       // ...other plugins
+     ],
+   })
+   ```
+
+3. Call server actions from the client
+
+   ```ts
+   import helloServer from './locid/hello.server'
+
+   const result = await helloServer({ name: 'Dave' })
+   console.log(result)
+   ```
+
+---
+
+## Configuration
+
+| Option   | Type   | Description                                                          |
+| -------- | ------ | -------------------------------------------------------------------- |
+| dir      | string | The directory where server actions are located. Defaults to `locid`. |
+| endpoint | string | The endpoint where server actions are called. Defaults to `/locid`.  |
+
+```ts
+export default defineConfig({
+  plugins: [
+    locidPlugin({
+      dir: 'actions',
+      endpoint: '/actions',
+    }),
+    // ...other plugins
+  ],
+})
+```
+
+---
+
+## Runtime Options
+
+`@locid/vite` exposes runtime helpers:
+
+```ts
+import { configureLocidClient } from '@locid/vite/runtime'
+
+configureLocidClient({
+  endpoint: '/api/locid',
+  getAuthToken: async () => localStorage.getItem('token')!,
+})
+```
+
+---
+
+## How the Vite Plugin Works (Implementation Outline)
+
+1. Scan server directory
+   Finds all \*.server.{ts,tsx,js,mjs,cjs} files and builds a map of:
+   `{ id: <hash>, absPath, relPath }`.
+
+2. Intercept imports
+   When the client tries to import a .server file, rewrite it to
+   `virtual:locid:<hash>`.
+
+3. Load the virtual module
+   Returns a tiny stub that calls `callLocid(hash, args)`.
+
+4. Dev server middleware
+   Handles POST `/locid`, dynamically imports the real file, runs it, and returns the JSON result.
+
+This gives the developer:
+
+- Zero config
+- Zero API boilerplate
+- A "server action" experience compatible with the entire JS ecosystem.
+
+---
+
+### Status
+
+This is an early proof-of-concept (PoC).
+Planned features include:
+
+- Named exports support
+- Streaming (NDJSON / fetch streams)
+- Middleware support
+- Caching & invalidation
+- Infrastructure adapters (Deno, AWS Lambda, Cloudflare Workers, Bun, etc.)
+````
+
+## File: packages/locid-core/tsconfig.json
+````json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}
+````
+
+## File: packages/locid-node/src/index.ts
+````typescript
+export * from './node-http-handler'
+````
+
+## File: packages/locid-node/src/node-http-handler.ts
+````typescript
+import { handleRequest } from '@locid/core/server'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+
+export function createNodeHttpHandler(
+  buildInitialCtx: (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ) => Promise<unknown> | unknown,
+) {
+  return async (req: IncomingMessage, res: ServerResponse) => {
+    const result = await handleRequest(
+      req,
+      res,
+      async (req) => {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(chunk as Buffer)
+        const body = JSON.parse(Buffer.concat(chunks).toString())
+        return { actionId: body.id, args: body.args }
+      },
+      buildInitialCtx,
+    )
+
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ result }))
+  }
+}
+````
+
+## File: packages/locid-node/package.json
+````json
+{
+  "name": "@locid/node",
+  "version": "0.0.1",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.0.0"
+  }
+}
+````
+
+## File: packages/locid-node/README.md
+````markdown
+# @locid/vite
+
+Locid is a framework-agnostic “server actions” system inspired by Next.js server actions, but portable across **any** JavaScript runtime (Vite, Bun, Deno, Node, Workers).  
+This package (`@locid/vite`) provides the Vite integration layer that makes Locid work during development and client-side bundling.
+
+Locid turns files in a **server directory** into RPC-style functions that you can import and call from your frontend code as if they were local. At build time, the plugin rewrites those imports to lightweight stubs that call your server action over HTTP (with optional streaming in the future).
+
+---
+
+## How Locid Works (Conceptual)
+
+1. You place server-side functions inside a directory such as `locid/`, and name them with the `.server.ts` suffix:
+
+   ```ts
+   // locid/hello.server.ts
+   export default async function helloServer(args: { name: string }) {
+     return {
+       message: `Hello from Locid, ${args.name}!`,
+       timestamp: new Date().toISOString(),
+     }
+   }
+   ```
+
+2. The Vite plugin scans that folder during build and assigns each file a stable hashed ID based on its relative path.
+   (Example: "hello.server.ts" → "9a3f12d01a44").
+
+3. When the client imports a .server.ts file:
+
+- In SSR or server builds, the import resolves normally.
+- In client builds, the plugin rewrites the import into a virtual module:
+
+  ```ts
+  import { callLocid } from '@locid/vite/runtime'
+  export default function locidAction(args) {
+    return callLocid('HASH_ID', args)
+  }
+  ```
+
+4. When that function is called in the browser, callLocid sends a POST request to the Locid endpoint (/locid by default).
+
+5. During development, the plugin registers a dev-server route that dynamically imports your server function file and executes it.
+
+6. You get a zero-API, file-based RPC system—server actions without a framework.
+
+---
+
+## Installation
+
+In a Vite project using npm workspaces:
+
+```bash
+npm install @locid/vite --save-dev
+```
+
+---
+
+## Usage
+
+1. Create a directory for server actions
+
+   Create `locid/hello.server.ts`:
+
+   ```ts
+   export default async function helloServer({ name }: { name: string }) {
+     return { message: `Hello from ${name}` }
+   }
+   ```
+
+2. Add the plugin to `vite.config.ts`:
+
+   ```ts
+   import { defineConfig } from 'vite'
+   import { locidPlugin } from '@locid/vite'
+
+   export default defineConfig({
+     plugins: [
+       locidPlugin(),
+       // ...other plugins
+     ],
+   })
+   ```
+
+3. Call server actions from the client
+
+   ```ts
+   import helloServer from './locid/hello.server'
+
+   const result = await helloServer({ name: 'Dave' })
+   console.log(result)
+   ```
+
+---
+
+## Configuration
+
+| Option   | Type   | Description                                                          |
+| -------- | ------ | -------------------------------------------------------------------- |
+| dir      | string | The directory where server actions are located. Defaults to `locid`. |
+| endpoint | string | The endpoint where server actions are called. Defaults to `/locid`.  |
+
+```ts
+export default defineConfig({
+  plugins: [
+    locidPlugin({
+      dir: 'actions',
+      endpoint: '/actions',
+    }),
+    // ...other plugins
+  ],
+})
+```
+
+---
+
+## Runtime Options
+
+`@locid/vite` exposes runtime helpers:
+
+```ts
+import { configureLocidClient } from '@locid/vite/runtime'
+
+configureLocidClient({
+  endpoint: '/api/locid',
+  getAuthToken: async () => localStorage.getItem('token')!,
+})
+```
+
+---
+
+## How the Vite Plugin Works (Implementation Outline)
+
+1. Scan server directory
+   Finds all \*.server.{ts,tsx,js,mjs,cjs} files and builds a map of:
+   `{ id: <hash>, absPath, relPath }`.
+
+2. Intercept imports
+   When the client tries to import a .server file, rewrite it to
+   `virtual:locid:<hash>`.
+
+3. Load the virtual module
+   Returns a tiny stub that calls `callLocid(hash, args)`.
+
+4. Dev server middleware
+   Handles POST `/locid`, dynamically imports the real file, runs it, and returns the JSON result.
+
+This gives the developer:
+
+- Zero config
+- Zero API boilerplate
+- A "server action" experience compatible with the entire JS ecosystem.
+
+---
+
+### Status
+
+This is an early proof-of-concept (PoC).
+Planned features include:
+
+- Named exports support
+- Streaming (NDJSON / fetch streams)
+- Middleware support
+- Caching & invalidation
+- Infrastructure adapters (Deno, AWS Lambda, Cloudflare Workers, Bun, etc.)
+````
+
+## File: packages/locid-node/tsconfig.json
+````json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}
+````
+
+## File: packages/locid-vite/src/index.ts
+````typescript
+export { locidPlugin } from './plugin'
+export { callLocid, configureLocidClient } from './runtime'
+
+export type { Middleware } from '@locid/core'
+export { createPipeline, defineAction } from '@locid/core'
+````
+
+## File: packages/locid-vite/src/plugin.ts
+````typescript
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+import type { Plugin } from 'vite'
+import { scanServerFiles } from './scan-server-files'
+import { LocidFileInfo, LocidPluginOptions } from './types'
+
+export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
+  const dir = options.dir ?? 'locid'
+  const endpoint = options.endpoint ?? '/locid'
+
+  let root = process.cwd()
+  let isSSRBuild = false
+
+  let fileMap = new Map<string, LocidFileInfo>()
+
+  return {
+    name: 'locid',
+    enforce: 'pre',
+
+    configResolved(config) {
+      root = config.root
+      isSSRBuild = !!config.build?.ssr
+    },
+
+    async buildStart() {
+      fileMap = await scanServerFiles(root, dir)
+      this.warn(`[locid] found ${fileMap.size} server files in ${dir}/`)
+    },
+
+    async resolveId(source, importer, opts) {
+      if (isSSRBuild || opts?.ssr) return null
+      if (!importer) return null
+
+      if (!source.includes('.server')) return null
+
+      const resolved = await this.resolve(source, importer, { skipSelf: true })
+      if (!resolved) return null
+
+      const info = fileMap.get(resolved.id)
+      if (!info) return null
+
+      const virtualId = `virtual:locid:${info.id}`
+      return virtualId
+    },
+
+    load(id) {
+      if (!id.startsWith('virtual:locid:')) return null
+
+      const hashId = id.replace('virtual:locid:', '')
+
+      return `
+  import { callLocid } from '@locid/vite';
+  export default function locidAction(args) {
+    return callLocid('${hashId}', args);
+  }
+`
+    },
+
+    configureServer(server) {
+      const watcher = server.watcher
+      const base = path.resolve(root, dir)
+
+      watcher.add(base)
+
+      const handleChange = async () => {
+        console.log(`[locid] Change detected in ${dir}/ — rescanning...`)
+        fileMap = await scanServerFiles(root, dir)
+        server.moduleGraph.invalidateAll()
+        server.ws.send({ type: 'full-reload' })
+      }
+
+      watcher.on('change', (file) => {
+        if (file.startsWith(base)) void handleChange()
+      })
+
+      watcher.on('add', (file) => {
+        if (file.startsWith(base)) void handleChange()
+      })
+
+      watcher.on('unlink', (file) => {
+        if (file.startsWith(base)) void handleChange()
+      })
+
+      server.middlewares.use(endpoint, async (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.end('Method Not Allowed')
+          return
+        }
+
+        try {
+          const chunks: Buffer[] = []
+          for await (const chunk of req) {
+            chunks.push(chunk as Buffer)
+          }
+          const bodyStr = Buffer.concat(chunks).toString('utf8')
+          const { id, args } = JSON.parse(bodyStr)
+
+          const entry = [...fileMap.values()].find((f) => f.id === id)
+          if (!entry) {
+            res.statusCode = 404
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: { message: 'Unknown locid id' } }))
+            return
+          }
+
+          // Bust Node's ESM cache by using a query param on the file URL
+          const fileUrl = pathToFileURL(entry.absPath).href + `?t=${Date.now()}`
+          const mod = await import(fileUrl)
+          const handler = mod.default
+
+          if (typeof handler !== 'function') {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(
+              JSON.stringify({
+                error: { message: 'Locid file has no default export function' },
+              }),
+            )
+            return
+          }
+
+          const result = await handler(args)
+
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ result }))
+        } catch (err: any) {
+          console.error('[locid] error handling request', err)
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(
+            JSON.stringify({
+              error: { message: err?.message ?? 'Internal error' },
+            }),
+          )
+        }
+      })
+    },
+  }
+}
+````
+
+## File: packages/locid-vite/src/runtime.ts
+````typescript
+export type LocidClientOptions = {
+  endpoint?: string
+}
+
+let globalOptions: LocidClientOptions = {
+  endpoint: '/locid',
+}
+
+export function configureLocidClient(opts: LocidClientOptions) {
+  globalOptions = { ...globalOptions, ...opts }
+}
+
+export async function callLocid<TArgs = unknown, TResult = unknown>(
+  locid: string,
+  args: TArgs,
+): Promise<TResult> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+
+  const res = await fetch(globalOptions.endpoint ?? '/locid', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ id: locid, args }),
+  })
+
+  if (!res.ok) throw new Error(`Locid call failed with status ${res.status}`)
+
+  const json = await res.json()
+  if (json.error) throw new Error(json.error.message ?? 'Locid error')
+
+  return json.result as TResult
+}
+````
+
+## File: packages/locid-vite/src/scan-server-files.ts
+````typescript
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { LocidFileInfo } from './types'
+import FastGlob from 'fast-glob'
+
+export const scanServerFiles = async (root: string, dir: string) => {
+  const base = path.resolve(root, dir)
+  const pattern = path
+    .join(base, '**/*.server.{ts,tsx,js,jsx,mjs,cjs}')
+    .replace(/\\/g, '/')
+
+  const entries = await FastGlob(pattern, { absolute: true })
+
+  const newMap = new Map<string, LocidFileInfo>()
+
+  for (const absPath of entries) {
+    const relPath = path.relative(base, absPath).replace(/\\/g, '/')
+
+    const hash = crypto
+      .createHash('sha1')
+      .update(relPath)
+      .digest('hex')
+      .slice(0, 12)
+
+    newMap.set(absPath, {
+      id: hash,
+      absPath,
+      relPath,
+    })
+  }
+
+  return newMap
+}
+````
+
+## File: packages/locid-vite/src/types.ts
+````typescript
+export type LocidFileInfo = {
+  id: string
+  absPath: string
+  relPath: string
+}
+
+export type LocidPluginOptions = {
+  dir?: string // e.g. "locid"
+  endpoint?: string // e.g. "/locid"
+}
+````
+
+## File: packages/locid-vite/package.json
+````json
+{
+  "name": "@locid/vite",
+  "version": "0.0.1",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsup"
+  },
+  "dependencies": {
+    "fast-glob": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.0.0"
+  }
+}
+````
+
+## File: packages/locid-vite/README.md
+````markdown
+# @locid/vite
+
+Locid is a framework-agnostic “server actions” system inspired by Next.js server actions, but portable across **any** JavaScript runtime (Vite, Bun, Deno, Node, Workers).  
+This package (`@locid/vite`) provides the Vite integration layer that makes Locid work during development and client-side bundling.
+
+Locid turns files in a **server directory** into RPC-style functions that you can import and call from your frontend code as if they were local. At build time, the plugin rewrites those imports to lightweight stubs that call your server action over HTTP (with optional streaming in the future).
+
+---
+
+## How Locid Works (Conceptual)
+
+1. You place server-side functions inside a directory such as `locid/`, and name them with the `.server.ts` suffix:
+
+   ```ts
+   // locid/hello.server.ts
+   export default async function helloServer(args: { name: string }) {
+     return {
+       message: `Hello from Locid, ${args.name}!`,
+       timestamp: new Date().toISOString(),
+     }
+   }
+   ```
+
+2. The Vite plugin scans that folder during build and assigns each file a stable hashed ID based on its relative path.
+   (Example: "hello.server.ts" → "9a3f12d01a44").
+
+3. When the client imports a .server.ts file:
+
+- In SSR or server builds, the import resolves normally.
+- In client builds, the plugin rewrites the import into a virtual module:
+
+  ```ts
+  import { callLocid } from '@locid/vite/runtime'
+  export default function locidAction(args) {
+    return callLocid('HASH_ID', args)
+  }
+  ```
+
+4. When that function is called in the browser, callLocid sends a POST request to the Locid endpoint (/locid by default).
+
+5. During development, the plugin registers a dev-server route that dynamically imports your server function file and executes it.
+
+6. You get a zero-API, file-based RPC system—server actions without a framework.
+
+---
+
+## Installation
+
+In a Vite project using npm workspaces:
+
+```bash
+npm install @locid/vite --save-dev
+```
+
+---
+
+## Usage
+
+1. Create a directory for server actions
+
+   Create `locid/hello.server.ts`:
+
+   ```ts
+   export default async function helloServer({ name }: { name: string }) {
+     return { message: `Hello from ${name}` }
+   }
+   ```
+
+2. Add the plugin to `vite.config.ts`:
+
+   ```ts
+   import { defineConfig } from 'vite'
+   import { locidPlugin } from '@locid/vite'
+
+   export default defineConfig({
+     plugins: [
+       locidPlugin(),
+       // ...other plugins
+     ],
+   })
+   ```
+
+3. Call server actions from the client
+
+   ```ts
+   import helloServer from './locid/hello.server'
+
+   const result = await helloServer({ name: 'Dave' })
+   console.log(result)
+   ```
+
+---
+
+## Configuration
+
+| Option   | Type   | Description                                                          |
+| -------- | ------ | -------------------------------------------------------------------- |
+| dir      | string | The directory where server actions are located. Defaults to `locid`. |
+| endpoint | string | The endpoint where server actions are called. Defaults to `/locid`.  |
+
+```ts
+export default defineConfig({
+  plugins: [
+    locidPlugin({
+      dir: 'actions',
+      endpoint: '/actions',
+    }),
+    // ...other plugins
+  ],
+})
+```
+
+---
+
+## Runtime Options
+
+`@locid/vite` exposes runtime helpers:
+
+```ts
+import { configureLocidClient } from '@locid/vite/runtime'
+
+configureLocidClient({
+  endpoint: '/api/locid',
+  getAuthToken: async () => localStorage.getItem('token')!,
+})
+```
+
+---
+
+## How the Vite Plugin Works (Implementation Outline)
+
+1. Scan server directory
+   Finds all \*.server.{ts,tsx,js,mjs,cjs} files and builds a map of:
+   `{ id: <hash>, absPath, relPath }`.
+
+2. Intercept imports
+   When the client tries to import a .server file, rewrite it to
+   `virtual:locid:<hash>`.
+
+3. Load the virtual module
+   Returns a tiny stub that calls `callLocid(hash, args)`.
+
+4. Dev server middleware
+   Handles POST `/locid`, dynamically imports the real file, runs it, and returns the JSON result.
+
+This gives the developer:
+
+- Zero config
+- Zero API boilerplate
+- A "server action" experience compatible with the entire JS ecosystem.
+
+---
+
+### Status
+
+This is an early proof-of-concept (PoC).
+Planned features include:
+
+- Named exports support
+- Streaming (NDJSON / fetch streams)
+- Middleware support
+- Caching & invalidation
+- Infrastructure adapters (Deno, AWS Lambda, Cloudflare Workers, Bun, etc.)
+````
+
+## File: packages/locid-vite/tsconfig.json
+````json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}
+````
+
+## File: packages/locid-vite/tsup.config.ts
+````typescript
+import { defineConfig } from 'tsup'
+
+export default defineConfig({
+  entry: ['src/index.ts', 'src/runtime.ts'],
+  format: ['esm'],
+  dts: true,
+  splitting: false,
+  sourcemap: true,
+  target: 'node18',
+  clean: true,
+})
+````
+
 ## File: locid/middleware/auth.ts
 ````typescript
-import type { Middleware } from '@locid/vite'
+import type { Middleware } from '@locid/core'
 import type { PublicCtx, AuthedCtx } from '../context'
 import { IncomingMessage, ServerResponse } from 'node:http'
 
@@ -122,7 +1233,7 @@ export const requireUser: Middleware<
 ````typescript
 import type { PublicCtx, AuthedCtx } from '../context'
 import { withOptionalUser, requireUser } from './auth'
-import { createPipeline } from '@locid/vite'
+import { createPipeline } from '@locid/core'
 import { withTraceId } from './traceId'
 import { IncomingMessage, ServerResponse } from 'node:http'
 
@@ -189,9 +1300,19 @@ const getProfile = defineAction({
 export default getProfile
 ````
 
+## File: locid/hello.server.ts
+````typescript
+export default async function helloServer(args: { name: string }) {
+  return {
+    message: `Hello from Locid, ${args.name}!`,
+    timestamp: new Date().toISOString(),
+  }
+}
+````
+
 ## File: locid/ping.server.ts
 ````typescript
-import { defineAction } from '@locid/vite'
+import { defineAction } from '@locid/core'
 import { publicPipeline } from './middleware/pipelines'
 import { PublicCtx } from './context'
 
@@ -205,445 +1326,6 @@ const ping = defineAction({
 export default ping
 ````
 
-## File: packages/locid/src/actions/define-action.ts
-````typescript
-import { ActionDef } from './types'
-
-export const defineAction = <
-  Args,
-  Result,
-  CtxIn = unknown,
-  CtxOut = CtxIn,
-  Req = unknown,
-  Res = unknown,
->(
-  def: ActionDef<Args, Result, CtxIn, CtxOut, Req, Res>,
-): ActionDef<Args, Result, CtxIn, CtxOut, Req, Res> => def
-````
-
-## File: packages/locid/src/actions/index.ts
-````typescript
-export * from './define-action'
-export * from './types'
-````
-
-## File: packages/locid/src/actions/types.ts
-````typescript
-import { MiddlewarePipeline } from '../middleware'
-
-export interface ActionDef<
-  Args,
-  Result,
-  CtxIn,
-  CtxOut,
-  Req = unknown,
-  Res = unknown,
-> {
-  middleware?: MiddlewarePipeline<CtxIn, CtxOut, Req, Res>
-  handler: (ctx: CtxOut, args: Args) => Promise<Result> | Result
-}
-````
-
-## File: packages/locid/src/client/types.ts
-````typescript
-import { ActionDef } from '../actions'
-
-export type Clientify<T> =
-  T extends ActionDef<infer Args, infer Result, any, any, any, any>
-    ? (args: Args) => Promise<Result>
-    : never
-````
-
-## File: packages/locid/src/middleware/create-pipeline.ts
-````typescript
-import { Middleware, MiddlewarePipeline } from './types'
-
-export const createPipeline = <CtxIn, CtxOut, Req, Res>(
-  ...middlewares: Middleware<any, any, Req, Res>[]
-): MiddlewarePipeline<CtxIn, CtxOut, Req, Res> => ({
-  async run(initialCtx: CtxIn, req: Req, res: Res): Promise<CtxOut> {
-    let ctx: unknown = initialCtx
-
-    for (const mw of middlewares) {
-      const result = await mw(ctx as any, req, res)
-      if (result !== undefined) {
-        ctx = result
-      }
-    }
-
-    return ctx as CtxOut
-  },
-})
-````
-
-## File: packages/locid/src/middleware/index.ts
-````typescript
-export * from './types'
-export * from './create-pipeline'
-````
-
-## File: packages/locid/src/middleware/types.ts
-````typescript
-export type Middleware<CtxIn, CtxOut, Req = unknown, Res = unknown> = (
-  ctx: CtxIn,
-  req: Req,
-  res: Res,
-) => Promise<CtxOut | void> | CtxOut | void
-
-export interface MiddlewarePipeline<
-  CtxIn,
-  CtxOut,
-  Req = unknown,
-  Res = unknown,
-> {
-  run: (initialCtx: CtxIn, req: Req, res: Res) => Promise<CtxOut>
-}
-````
-
-## File: packages/locid/src/server/handle-request.ts
-````typescript
-import { LocidRegistryEntry } from './types'
-
-const registry = new Map<string, LocidRegistryEntry>()
-
-export function registerAction(entry: LocidRegistryEntry) {
-  registry.set(entry.id, entry)
-}
-
-export async function handleRequest<Req, Res>(
-  req: Req,
-  res: Res,
-  parseRpc: (req: Req) => Promise<{ actionId: string; args: unknown }>,
-  buildInitialCtx: (req: Req, res: Res) => Promise<unknown> | unknown,
-): Promise<unknown> {
-  const { actionId, args } = await parseRpc(req)
-  const entry = registry.get(actionId)
-
-  if (!entry) throw new Error(`Unknown action: ${actionId}`)
-
-  const { def } = entry as LocidRegistryEntry
-  const initialCtx = await buildInitialCtx(req, res)
-
-  let finalCtx: unknown = initialCtx
-  if (def.middleware) {
-    finalCtx = await def.middleware.run(initialCtx, req, res)
-  }
-
-  return def.handler(finalCtx as any, args as any)
-}
-````
-
-## File: packages/locid/src/server/types.ts
-````typescript
-import { ActionDef } from "../actions"
-
-export interface LocidRegistryEntry<
-  Args = any,
-  Result = any,
-  CtxIn = any,
-  CtxOut = any,
-  Req = any,
-  Res = any
-> {
-  id: string
-  def: ActionDef<Args, Result, CtxIn, CtxOut, Req, Res>
-}
-````
-
-## File: locid/hello.server.ts
-````typescript
-export default async function helloServer(args: { name: string }) {
-  return {
-    message: `Hello from Locid, ${args.name}!`,
-    timestamp: new Date().toISOString(),
-  }
-}
-````
-
-## File: packages/locid/src/index.ts
-````typescript
-export { locidPlugin } from './plugin.js'
-export { callLocid, configureLocidClient } from './runtime.js'
-export { createPipeline, type Middleware } from './middleware/index.js'
-export { defineAction } from './actions/index.js'
-````
-
-## File: packages/locid/src/scan-server-files.ts
-````typescript
-import path from "node:path";
-import crypto from 'node:crypto';
-import { LocidFileInfo } from "./types";
-import FastGlob from "fast-glob";
-
-export const scanServerFiles = async (root: string, dir: string) => {
-  const base = path.resolve(root, dir);
-  const pattern = path
-    .join(base, '**/*.server.{ts,tsx,js,jsx,mjs,cjs}')
-    .replace(/\\/g, '/');
-
-  const entries = await FastGlob(pattern, { absolute: true });
-
-  const newMap = new Map<string, LocidFileInfo>();
-
-  for (const absPath of entries) {
-    const relPath = path.relative(base, absPath).replace(/\\/g, '/');
-
-    const hash = crypto
-      .createHash('sha1')
-      .update(relPath)
-      .digest('hex')
-      .slice(0, 12);
-
-    newMap.set(absPath, {
-      id: hash,
-      absPath,
-      relPath,
-    });
-  }
-
-  return newMap;
-}
-````
-
-## File: packages/locid/src/types.ts
-````typescript
-export type LocidFileInfo = {
-  id: string
-  absPath: string
-  relPath: string
-}
-
-export type LocidPluginOptions = {
-  dir?: string // e.g. "locid"
-  endpoint?: string // e.g. "/locid"
-}
-````
-
-## File: packages/locid/package.json
-````json
-{
-  "name": "@locid/vite",
-  "version": "0.0.1",
-  "description": "",
-  "license": "ISC",
-  "author": "",
-  "main": "dist/index.js",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    },
-    "./runtime": {
-      "import": "./dist/runtime.js",
-      "types": "./dist/runtime.d.ts"
-    }
-  },
-  "scripts": {
-    "build": "tsc -p tsconfig.json"
-  },
-  "dependencies": {
-    "fast-glob": "^3.3.2"
-  },
-  "devDependencies": {
-    "@types/node": "^24.10.1",
-    "typescript": "^5.0.0"
-  }
-}
-````
-
-## File: packages/locid/README.md
-````markdown
-# @locid/vite
-
-Locid is a framework-agnostic “server actions” system inspired by Next.js server actions, but portable across **any** JavaScript runtime (Vite, Bun, Deno, Node, Workers).  
-This package (`@locid/vite`) provides the Vite integration layer that makes Locid work during development and client-side bundling.
-
-Locid turns files in a **server directory** into RPC-style functions that you can import and call from your frontend code as if they were local. At build time, the plugin rewrites those imports to lightweight stubs that call your server action over HTTP (with optional streaming in the future).
-
----
-
-## How Locid Works (Conceptual)
-
-1. You place server-side functions inside a directory such as `locid/`, and name them with the `.server.ts` suffix:
-
-   ```ts
-   // locid/hello.server.ts
-   export default async function helloServer(args: { name: string }) {
-     return {
-       message: `Hello from Locid, ${args.name}!`,
-       timestamp: new Date().toISOString(),
-     }
-   }
-   ```
-
-2. The Vite plugin scans that folder during build and assigns each file a stable hashed ID based on its relative path.
-(Example: "hello.server.ts" → "9a3f12d01a44").
-
-3. When the client imports a .server.ts file:
-
- - In SSR or server builds, the import resolves normally.
- - In client builds, the plugin rewrites the import into a virtual module:
-
-   ```ts
-   import { callLocid } from "@locid/vite/runtime";
-   export default function locidAction(args) {
-     return callLocid("HASH_ID", args);
-   }
-   ```
-
-4. When that function is called in the browser, callLocid sends a POST request to the Locid endpoint (/locid by default).
-
-5. During development, the plugin registers a dev-server route that dynamically imports your server function file and executes it.
-
-6. You get a zero-API, file-based RPC system—server actions without a framework.
-
----
-
-## Installation
-
-In a Vite project using npm workspaces:
-
-```bash
-npm install @locid/vite --save-dev
-```
-
----
-
-## Usage
-
-1. Create a directory for server actions
-
-   Create `locid/hello.server.ts`:
-
-   ```ts
-   export default async function helloServer({ name }: { name: string }) {
-     return { message: `Hello from ${name}` }
-   }
-   ```
-
-2. Add the plugin to `vite.config.ts`:
-
-   ```ts
-   import { defineConfig } from 'vite'
-   import { locidPlugin } from '@locid/vite'
-
-   export default defineConfig({
-     plugins: [
-       locidPlugin(),
-       // ...other plugins
-     ],
-   })
-   ```
-
-3. Call server actions from the client
-
-   ```ts
-   import helloServer from './locid/hello.server'
-
-   const result = await helloServer({ name: 'Dave' })
-   console.log(result)
-   ```
-
----
-
-## Configuration
-
-|Option|Type|Description|
-|---|---|---|
-|dir|string|The directory where server actions are located. Defaults to `locid`.|
-|endpoint|string|The endpoint where server actions are called. Defaults to `/locid`.|
-
-```ts
-export default defineConfig({
-  plugins: [
-    locidPlugin({
-      dir: 'actions',
-      endpoint: '/actions',
-    }),
-    // ...other plugins
-  ],
-})
-```
-
----
-
-## Runtime Options
-
-`@locid/vite` exposes runtime helpers:
-
-```ts
-import { configureLocidClient } from "@locid/vite/runtime";
-
-configureLocidClient({
-  endpoint: "/api/locid",
-  getAuthToken: async () => localStorage.getItem("token")!,
-});
-```
-
----
-
-## How the Vite Plugin Works (Implementation Outline)
-
-
-1. Scan server directory
-   Finds all *.server.{ts,tsx,js,mjs,cjs} files and builds a map of:
-   `{ id: <hash>, absPath, relPath }`.
-
-2. Intercept imports
-   When the client tries to import a .server file, rewrite it to
-   `virtual:locid:<hash>`.
-
-3. Load the virtual module
-   Returns a tiny stub that calls `callLocid(hash, args)`.
-
-4. Dev server middleware
-   Handles POST `/locid`, dynamically imports the real file, runs it, and returns the JSON result.
-
-This gives the developer:
-
-- Zero config
-- Zero API boilerplate
-- A "server action" experience compatible with the entire JS ecosystem.
-
----
-
-### Status
-
-This is an early proof-of-concept (PoC).
-Planned features include:
-
-- Named exports support
-- Streaming (NDJSON / fetch streams)
-- Middleware support
-- Caching & invalidation
-- Infrastructure adapters (Deno, AWS Lambda, Cloudflare Workers, Bun, etc.)
-````
-
-## File: packages/locid/tsconfig.json
-````json
-{
-  "compilerOptions": {
-    "target": "ES2020",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "declaration": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "types": [
-      "node"
-    ]
-  },
-  "include": [
-    "src"
-  ]
-}
-````
-
 ## File: public/vite.svg
 ````
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="31.88" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 257"><defs><linearGradient id="IconifyId1813088fe1fbc01fb466" x1="-.828%" x2="57.636%" y1="7.652%" y2="78.411%"><stop offset="0%" stop-color="#41D1FF"></stop><stop offset="100%" stop-color="#BD34FE"></stop></linearGradient><linearGradient id="IconifyId1813088fe1fbc01fb467" x1="43.376%" x2="50.316%" y1="2.242%" y2="89.03%"><stop offset="0%" stop-color="#FFEA83"></stop><stop offset="8.333%" stop-color="#FFDD35"></stop><stop offset="100%" stop-color="#FFA800"></stop></linearGradient></defs><path fill="url(#IconifyId1813088fe1fbc01fb466)" d="M255.153 37.938L134.897 252.976c-2.483 4.44-8.862 4.466-11.382.048L.875 37.958c-2.746-4.814 1.371-10.646 6.827-9.67l120.385 21.517a6.537 6.537 0 0 0 2.322-.004l117.867-21.483c5.438-.991 9.574 4.796 6.877 9.62Z"></path><path fill="url(#IconifyId1813088fe1fbc01fb467)" d="M185.432.063L96.44 17.501a3.268 3.268 0 0 0-2.634 3.014l-5.474 92.456a3.268 3.268 0 0 0 3.997 3.378l24.777-5.718c2.318-.535 4.413 1.507 3.936 3.838l-7.361 36.047c-.495 2.426 1.782 4.5 4.151 3.78l15.304-4.649c2.372-.72 4.652 1.36 4.15 3.788l-11.698 56.621c-.732 3.542 3.979 5.473 5.943 2.437l1.313-2.028l72.516-144.72c1.215-2.423-.88-5.186-3.54-4.672l-25.505 4.922c-2.396.462-4.435-1.77-3.759-4.114l16.646-57.705c.677-2.35-1.37-4.583-3.769-4.113Z"></path></svg>
@@ -651,10 +1333,11 @@ Planned features include:
 
 ## File: src/App.tsx
 ````typescript
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 // This import will be rewritten on client builds into a stub that calls /locid
 import helloServer from '../locid/hello.server'
+import getProfileServer from '../locid/get-profile.server'
 
 export default function App() {
   const [result, setResult] = useState<string | null>(null)
@@ -663,6 +1346,12 @@ export default function App() {
     const res = await helloServer({ name: 'Dave' })
     setResult(res.message)
   }
+
+  useEffect(() => {
+    getProfileServer()
+      .then((data) => console.log(data))
+      .error((error) => console.error(error))
+  }, [])
 
   return (
     <div>
@@ -782,7 +1471,7 @@ export default defineConfig([
     "lint": "eslint .",
     "preview": "vite preview",
     "repomix": "repomix --style markdown",
-    "build:locid": "npm run build -w packages/locid"
+    "build:locid": "npm run build -w @locid/core && npm run build -w @locid/node && npm run build -w @locid/vite"
   },
   "dependencies": {
     "react": "^19.2.0",
@@ -904,47 +1593,6 @@ export default defineConfig({
 })
 ````
 
-## File: packages/locid/src/runtime.ts
-````typescript
-export type LocidClientOptions = {
-  endpoint?: string;
-};
-
-let globalOptions: LocidClientOptions = {
-  endpoint: '/locid',
-};
-
-export function configureLocidClient(opts: LocidClientOptions) {
-  globalOptions = { ...globalOptions, ...opts };
-}
-
-export async function callLocid<TArgs = unknown, TResult = unknown>(
-  locid: string,
-  args: TArgs,
-): Promise<TResult> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  const res = await fetch(globalOptions.endpoint ?? '/locid', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ id: locid, args }),
-  });
-
-  if (!res.ok)
-    throw new Error(`Locid call failed with status ${res.status}`);
-
-
-  const json = await res.json();
-  if (json.error)
-    throw new Error(json.error.message ?? 'Locid error');
-
-
-  return json.result as TResult;
-}
-````
-
 ## File: README.md
 ````markdown
 # Locid Vite PoC
@@ -991,149 +1639,4 @@ This proves Locid's core abstraction works:
 - Middleware
 - Production adapters
 - Type generation
-````
-
-## File: packages/locid/src/plugin.ts
-````typescript
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import type { Plugin } from 'vite';
-import { scanServerFiles } from './scan-server-files.js';
-import { LocidFileInfo, LocidPluginOptions } from './types';
-
-export function locidPlugin(options: LocidPluginOptions = {}): Plugin {
-  const dir = options.dir ?? 'locid';
-  const endpoint = options.endpoint ?? '/locid';
-
-  let root = process.cwd();
-  let isSSRBuild = false;
-
-  let fileMap = new Map<string, LocidFileInfo>();
-
-  return {
-    name: 'locid',
-    enforce: 'pre',
-
-    configResolved(config) {
-      root = config.root;
-      isSSRBuild = !!config.build?.ssr;
-    },
-
-    async buildStart() {
-      fileMap = await scanServerFiles(root, dir);
-      this.warn(`[locid] found ${fileMap.size} server files in ${dir}/`);
-    },
-
-    async resolveId(source, importer, opts) {
-      if (isSSRBuild || opts?.ssr) return null;
-      if (!importer) return null;
-
-      if (!source.includes('.server')) return null;
-
-      const resolved = await this.resolve(source, importer, { skipSelf: true });
-      if (!resolved) return null;
-
-      const info = fileMap.get(resolved.id);
-      if (!info) return null;
-
-      const virtualId = `virtual:locid:${info.id}`;
-      return virtualId;
-    },
-
-    load(id) {
-      if (!id.startsWith('virtual:locid:')) return null;
-
-      const hashId = id.replace('virtual:locid:', '');
-
-      return `
-        import { callLocid } from '@locid/vite/runtime';
-        export default function locidAction(args) {
-          return callLocid('${hashId}', args);
-        }
-      `;
-    },
-
-    configureServer(server) {
-      const watcher = server.watcher;
-      const base = path.resolve(root, dir);
-
-      watcher.add(base);
-
-      const handleChange = async () => {
-        console.log(`[locid] Change detected in ${dir}/ — rescanning...`);
-        fileMap = await scanServerFiles(root, dir);
-        server.moduleGraph.invalidateAll();
-        server.ws.send({ type: 'full-reload' });
-      };
-
-      watcher.on('change', (file) => {
-        if (file.startsWith(base)) void handleChange();
-      });
-
-      watcher.on('add', (file) => {
-        if (file.startsWith(base)) void handleChange();
-      });
-
-      watcher.on('unlink', (file) => {
-        if (file.startsWith(base)) void handleChange();
-      });
-
-      server.middlewares.use(endpoint, async (req, res) => {
-        if (req.method !== 'POST') {
-          res.statusCode = 405;
-          res.end('Method Not Allowed');
-          return;
-        }
-
-        try {
-          const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk as Buffer);
-          }
-          const bodyStr = Buffer.concat(chunks).toString('utf8');
-          const { id, args } = JSON.parse(bodyStr);
-
-          const entry = [...fileMap.values()].find((f) => f.id === id);
-          if (!entry) {
-            res.statusCode = 404;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ error: { message: 'Unknown locid id' } }));
-            return;
-          }
-
-          // Bust Node's ESM cache by using a query param on the file URL
-          const fileUrl = pathToFileURL(entry.absPath).href + `?t=${Date.now()}`;
-          const mod = await import(fileUrl);
-          const handler = mod.default;
-
-          if (typeof handler !== 'function') {
-            res.statusCode = 500;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(
-              JSON.stringify({
-                error: { message: 'Locid file has no default export function' },
-              }),
-            );
-            return;
-          }
-
-          const result = await handler(args);
-
-          res.statusCode = 200;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ result }));
-        } catch (err: any) {
-          console.error('[locid] error handling request', err);
-          res.statusCode = 500;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(
-            JSON.stringify({
-              error: { message: err?.message ?? 'Internal error' },
-            }),
-          );
-        }
-      });
-    },
-  };
-}
 ````

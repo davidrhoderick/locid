@@ -1,6 +1,6 @@
-import { Middleware } from '@locid/vite'
+import { type Middleware } from '@locid/vite'
 import { IncomingMessage, ServerResponse } from 'node:http'
-import { PublicCtx } from '../context'
+import { type PublicCtx } from '../context'
 
 export const withTraceId: Middleware<
   PublicCtx,

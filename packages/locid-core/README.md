@@ -22,19 +22,19 @@ Locid turns files in a **server directory** into RPC-style functions that you ca
    ```
 
 2. The Vite plugin scans that folder during build and assigns each file a stable hashed ID based on its relative path.
-(Example: "hello.server.ts" → "9a3f12d01a44").
+   (Example: "hello.server.ts" → "9a3f12d01a44").
 
 3. When the client imports a .server.ts file:
 
- - In SSR or server builds, the import resolves normally.
- - In client builds, the plugin rewrites the import into a virtual module:
+- In SSR or server builds, the import resolves normally.
+- In client builds, the plugin rewrites the import into a virtual module:
 
-   ```ts
-   import { callLocid } from "@locid/vite/runtime";
-   export default function locidAction(args) {
-     return callLocid("HASH_ID", args);
-   }
-   ```
+  ```ts
+  import { callLocid } from '@locid/vite/runtime'
+  export default function locidAction(args) {
+    return callLocid('HASH_ID', args)
+  }
+  ```
 
 4. When that function is called in the browser, callLocid sends a POST request to the Locid endpoint (/locid by default).
 
@@ -93,10 +93,10 @@ npm install @locid/vite --save-dev
 
 ## Configuration
 
-|Option|Type|Description|
-|---|---|---|
-|dir|string|The directory where server actions are located. Defaults to `locid`.|
-|endpoint|string|The endpoint where server actions are called. Defaults to `/locid`.|
+| Option   | Type   | Description                                                          |
+| -------- | ------ | -------------------------------------------------------------------- |
+| dir      | string | The directory where server actions are located. Defaults to `locid`. |
+| endpoint | string | The endpoint where server actions are called. Defaults to `/locid`.  |
 
 ```ts
 export default defineConfig({
@@ -117,21 +117,20 @@ export default defineConfig({
 `@locid/vite` exposes runtime helpers:
 
 ```ts
-import { configureLocidClient } from "@locid/vite/runtime";
+import { configureLocidClient } from '@locid/vite/runtime'
 
 configureLocidClient({
-  endpoint: "/api/locid",
-  getAuthToken: async () => localStorage.getItem("token")!,
-});
+  endpoint: '/api/locid',
+  getAuthToken: async () => localStorage.getItem('token')!,
+})
 ```
 
 ---
 
 ## How the Vite Plugin Works (Implementation Outline)
 
-
 1. Scan server directory
-   Finds all *.server.{ts,tsx,js,mjs,cjs} files and builds a map of:
+   Finds all \*.server.{ts,tsx,js,mjs,cjs} files and builds a map of:
    `{ id: <hash>, absPath, relPath }`.
 
 2. Intercept imports

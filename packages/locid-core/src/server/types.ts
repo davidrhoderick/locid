@@ -1,4 +1,4 @@
-import { ActionDef } from "../actions"
+import { ActionDef } from '../actions'
 
 export interface LocidRegistryEntry<
   Args = any,
@@ -6,7 +6,7 @@ export interface LocidRegistryEntry<
   CtxIn = any,
   CtxOut = any,
   Req = any,
-  Res = any
+  Res = any,
 > {
   id: string
   def: ActionDef<Args, Result, CtxIn, CtxOut, Req, Res>

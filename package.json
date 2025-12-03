@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "repomix": "repomix --style markdown",
-    "build:locid": "npm run build -w packages/locid"
+    "build:locid": "npm run build -w @locid/core && npm run build -w @locid/node && npm run build -w @locid/vite"
   },
   "dependencies": {
     "react": "^19.2.0",

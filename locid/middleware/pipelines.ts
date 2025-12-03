@@ -1,6 +1,6 @@
 import type { PublicCtx, AuthedCtx } from '../context'
 import { withOptionalUser, requireUser } from './auth'
-import { createPipeline } from '@locid/vite'
+import { createPipeline } from '@locid/core'
 import { withTraceId } from './traceId'
 import { IncomingMessage, ServerResponse } from 'node:http'
 

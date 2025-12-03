@@ -8,3 +8,7 @@ export type LocidPluginOptions = {
   dir?: string // e.g. "locid"
   endpoint?: string // e.g. "/locid"
 }
+
+export type LocidClientOptions = {
+  endpoint?: string
+}

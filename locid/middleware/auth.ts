@@ -1,4 +1,4 @@
-import type { Middleware } from '@locid/vite'
+import type { Middleware } from '@locid/core'
 import type { PublicCtx, AuthedCtx } from '../context'
 import { IncomingMessage, ServerResponse } from 'node:http'
 

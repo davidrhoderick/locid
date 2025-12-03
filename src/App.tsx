@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 // This import will be rewritten on client builds into a stub that calls /locid
 import helloServer from '../locid/hello.server'
+import getProfileServer from '../locid/get-profile.server'
 
 export default function App() {
   const [result, setResult] = useState<string | null>(null)
@@ -10,6 +11,12 @@ export default function App() {
     const res = await helloServer({ name: 'Dave' })
     setResult(res.message)
   }
+
+  useEffect(() => {
+    getProfileServer()
+      .then((data) => console.log(data))
+      .error((error) => console.error(error))
+  }, [])
 
   return (
     <div>
